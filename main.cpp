@@ -9,7 +9,7 @@
 
 void calcSums(double (*f)(double x), double from, double to, double dx, double * s_out, double * S_out)
 {
-	const int nSeg = 0x100000;
+	const int nSeg = 0x1000000;
 
 	double s = 0;
 	double S = 0;
@@ -82,8 +82,8 @@ int main(int argc, char* argv[])
 	double eps = 1e-13;
 	double I;
 	
-	double from = -3.141592653 * 3;
-	double to = 3.141592653 * 3;
+	double from = -20;
+	double to = 20;
 
 	double (*func)(double x) = std::sin;
 
@@ -93,7 +93,7 @@ int main(int argc, char* argv[])
 	std::mutex Ilock;
 
 	for (int i = 0; i < N; i++)
-		threads[i] = new std::thread(threadFunc, static_cast<double (*)(double)>(std::sin), from + i * Dx, to + i * Dx, eps / N, &I, &Ilock);
+		threads[i] = new std::thread(threadFunc, static_cast<double (*)(double)>(std::sin), from + i * Dx, from + (i + 1) * Dx, eps / N, &I, &Ilock);
 
 	for (int i = 0; i < N; i++)
 		threads[i]->join();
