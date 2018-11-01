@@ -7,9 +7,9 @@
 #include <mutex>
 #include <cmath>
 
-void calcSums(double (*f)(double x), double from, double to, double dx, double * s_out, double * S_out)
+void calcSums(double (*f)(double x), double from, double to, double dx, double * s_out, double * S_out, int nSeg)
 {
-	const int nSeg = 0x1000000;
+	//const int nSeg = 0x1000000;
 
 	double s = 0;
 	double S = 0;
@@ -50,7 +50,7 @@ void calcSums(double (*f)(double x), double from, double to, double dx, double *
 	*S_out += S;
 }
 
-void threadFunc(double (*f)(double x), double from, double to, double eps, double * I, std::mutex * Ilock)
+void threadFunc(double (*f)(double x), double from, double to, double eps, double * I, std::mutex * Ilock, int nSeg)
 {
 	double s;
 	double S;
@@ -61,7 +61,7 @@ void threadFunc(double (*f)(double x), double from, double to, double eps, doubl
 	{
 		S = s = 0;
 
-		calcSums(f, from, to, dx, &s, &S);
+		calcSums(f, from, to, dx, &s, &S, nSeg);
 		dx /= 2;
 	}
 	while (S - s > eps);
@@ -82,8 +82,10 @@ int main(int argc, char* argv[])
 	double eps = 1e-13;
 	double I;
 	
-	double from = -20;
-	double to = 20;
+	double from = -50;
+	double to = 50;
+	
+	const int nSeg = 0x1000000;
 
 	double (*func)(double x) = std::sin;
 
@@ -93,7 +95,7 @@ int main(int argc, char* argv[])
 	std::mutex Ilock;
 
 	for (int i = 0; i < N; i++)
-		threads[i] = new std::thread(threadFunc, static_cast<double (*)(double)>(std::sin), from + i * Dx, from + (i + 1) * Dx, eps / N, &I, &Ilock);
+		threads[i] = new std::thread(threadFunc, static_cast<double (*)(double)>(std::sin), from + i * Dx, from + (i + 1) * Dx, eps / N, &I, &Ilock, nSeg / N);
 
 	for (int i = 0; i < N; i++)
 		threads[i]->join();
