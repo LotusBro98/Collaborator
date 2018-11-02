@@ -1,13 +1,20 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sched.h>
+#include <pthread.h>
 
 #include <iostream>
 #include <thread>
 #include <mutex>
 #include <cmath>
 
-void calcSums(double (*f)(double x), double from, double to, double dx, double * s_out, double * S_out, int nSeg)
+inline double func(double x)
+{
+	return x * x * x / 4;
+}
+
+void calcSums(double (*f)(double x), double from, double to, double dx, int nSeg, double * s_out, double * S_out)
 {
 	//const int nSeg = 0x1000000;
 
@@ -50,27 +57,29 @@ void calcSums(double (*f)(double x), double from, double to, double dx, double *
 	*S_out += S;
 }
 
-void threadFunc(double (*f)(double x), double from, double to, double eps, double * I, std::mutex * Ilock, int nSeg)
+int cpus[4] = {0, 1, 2, 3};
+
+void threadFunc(double (*f)(double x), double from, double to, double dx, int nSeg, double * s_out, double * S_out, std::mutex * sumLock, int thr, int nThr)
 {
-	double s;
-	double S;
+	double s = 0;
+	double S = 0;
 
-	double dx = 1e-5;
-	
-	do
-	{
-		S = s = 0;
+	double Dx = (to - from) / nThr;
 
-		calcSums(f, from, to, dx, &s, &S, nSeg);
-		dx /= 2;
-	}
-	while (S - s > eps);
+	cpu_set_t set;
+	CPU_ZERO(&set);
+	CPU_SET(cpus[thr % 4], &set);
 
-	Ilock->lock();
+	pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
 
-	*I += (S + s) / 2;
+	calcSums(f, from + thr * Dx, from + (thr + 1) * Dx, dx, nSeg / nThr, &s, &S);
 
-	Ilock->unlock();
+	sumLock->lock();
+
+	*s_out += s;
+	*S_out += S;
+
+	sumLock->unlock();
 }
 
 int main(int argc, char* argv[])
@@ -82,8 +91,8 @@ int main(int argc, char* argv[])
 	double eps = 1e-13;
 	double I;
 	
-	double from = -50;
-	double to = 50;
+	double from = 0;
+	double to = 1;
 	
 	const int nSeg = 0x1000000;
 
@@ -93,13 +102,22 @@ int main(int argc, char* argv[])
 
 	std::thread ** threads = new std::thread*[N];
 	std::mutex Ilock;
-
-	for (int i = 0; i < N; i++)
-		threads[i] = new std::thread(threadFunc, static_cast<double (*)(double)>(std::sin), from + i * Dx, from + (i + 1) * Dx, eps / N, &I, &Ilock, nSeg / N);
-
-	for (int i = 0; i < N; i++)
-		threads[i]->join();
 	
+	double s, S;
+	double dx = 1e-7;
+
+	do
+	{
+		for (int i = 0; i < N; i++)
+			threads[i] = new std::thread(threadFunc, func, from, to, dx, nSeg, &s, &S, &Ilock, i, N);
+
+		for (int i = 0; i < N; i++)
+			threads[i]->join();
+	}
+	while (S - s > eps);
+
+
+	I = (s + S) / 2;
 
 	std::cout << I << std::endl;
 
