@@ -8,20 +8,206 @@
 #include <thread>
 #include <mutex>
 #include <cmath>
+#include <iomanip>
 
-inline double func(double x)
-{
-	return x * x * x / 4;
-}
+#include <errno.h>
 
-void calcSums(double (*f)(double x), double from, double to, double dx, int nSeg, double * s_out, double * S_out)
+class Task
 {
-	//const int nSeg = 0x1000000;
+public:
+
+	struct Seg
+	{
+		double from;
+		double to;
+	};
+
+	Task(double (*f)(double x), double from, double to, double eps)
+	{
+		head = 0;
+		tail = 0;
+		taken = 0;
+		done = 0;
+	
+		this->f = f;
+		this->eps = eps;
+
+		this->I = 0;
+
+		this->from = from;
+		this->to = to;
+
+		push(Seg{from, to});
+	}
+
+
+	friend std::ostream& operator << (std::ostream & os, Task * task)
+	{
+		os << std::setprecision(8) << task->I << "; " << std::setprecision(2);
+		for (int i = task->head; i != task->tail; i = (i + 1) % task->size)
+			os << "[" << task->queue[i].from << ", " << task->queue[i].to << "] ";
+		os << std::endl;
+
+		return os;
+	}
+
+	void printProgress()
+	{
+		lock.lock();
+		if (firstPrint)
+			firstPrint = false;
+		else
+			printf("\033M");
+		printf("%d%%\n", (int)(done * 100));
+		lock.unlock();
+	}
+
+	bool commit(Seg seg, double s, double S)
+	{
+		lock.lock();
+		taken--;
+		if (S - s < eps * (seg.to - seg.from) / (to - from))
+		{
+			I += (s + S) / 2;
+			done += (seg.to - seg.from) / (to - from);
+			
+			lock.unlock();
+			waiting.unlock();
+			return true;
+		}
+		else
+		{
+			splitAndPush(seg);
+			lock.unlock();
+			waiting.unlock();
+			return false;
+		}
+	}
+
+	bool take(Seg * seg)
+	{
+		check:
+
+		lock.lock();
+		if (pop(seg))
+		{
+			taken++;
+			lock.unlock();
+			return true;
+		}
+		else
+		{
+			if (taken > 0)
+			{
+				lock.unlock();
+				waiting.lock();
+				goto check;
+			}
+			else
+			{
+				lock.unlock();
+				return false;
+			}
+		}
+	}
+
+	double getI()
+	{
+		return I;
+	}
+
+	friend void threadFunc(Task * task, int thr, int nThr);
+
+
+
+private:
+
+	bool push(Seg seg)
+	{
+		if ((tail + 1) % size == head)
+			return false;
+
+		queue[tail] = seg;
+		tail = (tail + 1) % size;
+
+		return true;
+	}
+
+	bool pop(Seg * seg)
+	{
+		if (head == tail)
+			return false;
+
+		*seg = queue[head];
+		head = (head + 1) % size;
+
+		return true;
+	}
+
+	inline bool isEmpty()
+	{
+		return (head == tail);
+	}
+
+	inline bool isFull()
+	{
+		return ((tail + 1) % size == head);
+	}
+
+	bool splitAndPush(Seg seg)
+	{
+		if ((tail + 1) % size == head || (tail + 2) % size == head)
+			return false;
+
+		double from = seg.from;
+		double to = seg.to;
+		double middle = (from + to) / 2;
+
+		Seg seg1 = Seg{from, middle};
+		Seg seg2 = Seg{middle, to};
+
+		queue[tail] = seg1;
+		tail = (tail + 1) % size;
+
+		queue[tail] = seg2;
+		tail = (tail + 1) % size;
+		
+		return true;
+	}
+
+
+
+	int head;
+	int tail;
+	int taken;
+	static const int size = 0x100;
+	std::mutex lock;
+	std::mutex waiting;
+
+	bool firstPrint = true;
+
+	double I;
+	double done;
+
+	double (*f)(double x);
+	double eps;
+	double from;
+	double to;
+	
+	Seg queue[size];
+};
+
+void calcSums(double (*f)(double x), double from, double to, double * s_out, double * S_out)
+{
+	const int nSeg = 0x1000;
+	const int nSubSeg = 0x100;
+
+	double Dx = (to - from) / nSeg;
+	double dx = Dx / nSubSeg;
 
 	double s = 0;
 	double S = 0;
 
-	double Dx = (to - from) / nSeg;
 
 	for (int i = 0; i < nSeg; i++)
 	{
@@ -35,8 +221,9 @@ void calcSums(double (*f)(double x), double from, double to, double dx, int nSeg
 		double fx = 0;
 		double fx_dx;
 
-		for (double x = x0 + dx; x < x1; x += dx)
+		for (int j = 1; j <= nSubSeg; j++)
 		{
+			double x = x0 + j * dx;	
 			fx_dx = fx;
 			fx = f(x) - f0 - k * (x - x0);
 
@@ -53,34 +240,72 @@ void calcSums(double (*f)(double x), double from, double to, double dx, int nSeg
 		S += Dx * (f0 + f1) / 2;
 	}
 
-	*s_out += s;
-	*S_out += S;
+	*s_out = s;
+	*S_out = S;
 }
 
 int cpus[4] = {0, 1, 2, 3};
 
-void threadFunc(double (*f)(double x), double from, double to, double dx, int nSeg, double * s_out, double * S_out, std::mutex * sumLock, int thr, int nThr)
+
+
+void threadFunc(Task * task, int thr, int nThr)
 {
 	double s = 0;
 	double S = 0;
 
-	double Dx = (to - from) / nThr;
+	int cpu = cpus[thr % 4];
 
 	cpu_set_t set;
 	CPU_ZERO(&set);
-	CPU_SET(cpus[thr % 4], &set);
-
+	CPU_SET(cpu, &set);
+	
 	pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
 
-	calcSums(f, from + thr * Dx, from + (thr + 1) * Dx, dx, nSeg / nThr, &s, &S);
+	Task::Seg seg;
 
-	sumLock->lock();
+	int i = 0;
 
-	*s_out += s;
-	*S_out += S;
+	while (task->take(&seg))
+	{
+		calcSums(task->f, seg.from, seg.to, &s, &S);
+		task->commit(seg, s, S);
+		i++;
+		if (i % 1 == 0)
+			task->printProgress();
+	}
+	task->waiting.unlock();
 
-	sumLock->unlock();
+	printf("thread %d: %d iterations\n", thr, i);
 }
+
+double integrate(Task * task, int nThreads)
+{
+	std::thread ** threads = new std::thread*[nThreads];
+
+	for (int i = 0; i < nThreads; i++)
+		threads[i] = new std::thread(threadFunc, task, i, nThreads);
+
+	for (int i = 0; i < nThreads; i++)
+	{
+		threads[i]->join();
+		delete threads[i];
+	}
+
+	delete [] threads;
+
+	return task->getI();
+}
+
+
+
+
+inline double func(double x)
+{
+	return std::sin(x);
+}
+
+
+
 
 int main(int argc, char* argv[])
 {
@@ -92,34 +317,19 @@ int main(int argc, char* argv[])
 	double I;
 	
 	double from = 0;
-	double to = 1;
-	
-	const int nSeg = 0x1000000;
+	double to = 3 * 3.141592653;
 
-	double (*func)(double x) = std::sin;
+	Task * task = new Task(func, from, to, eps);
 
-	double Dx = (to - from) / N;
+	I = integrate(task, N);
 
-	std::thread ** threads = new std::thread*[N];
-	std::mutex Ilock;
-	
+/*
 	double s, S;
-	double dx = 1e-7;
-
-	do
-	{
-		for (int i = 0; i < N; i++)
-			threads[i] = new std::thread(threadFunc, func, from, to, dx, nSeg, &s, &S, &Ilock, i, N);
-
-		for (int i = 0; i < N; i++)
-			threads[i]->join();
-	}
-	while (S - s > eps);
-
-
+	calcSums(func, from, to, &s, &S);
 	I = (s + S) / 2;
+*/
 
-	std::cout << I << std::endl;
+	std::cout << "I = " << I << std::endl;
 
 	return 0;
 }
