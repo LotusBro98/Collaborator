@@ -12,6 +12,10 @@
 
 #include <errno.h>
 
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/time.h>
+
 class Task
 {
 public:
@@ -77,7 +81,8 @@ public:
 		}
 		else
 		{
-			splitAndPush(seg);
+			if (!splitAndPush(seg))
+				throw;
 			lock.unlock();
 			waiting.unlock();
 			return false;
@@ -89,6 +94,7 @@ public:
 		check:
 
 		lock.lock();
+
 		if (pop(seg))
 		{
 			taken++;
@@ -180,7 +186,7 @@ private:
 	int head;
 	int tail;
 	int taken;
-	static const int size = 0x100;
+	static const int size = 0x10000;
 	std::mutex lock;
 	std::mutex waiting;
 
@@ -200,7 +206,7 @@ private:
 void calcSums(double (*f)(double x), double from, double to, double * s_out, double * S_out)
 {
 	const int nSeg = 0x1000;
-	const int nSubSeg = 0x100;
+	const int nSubSeg = 0x10;
 
 	double Dx = (to - from) / nSeg;
 	double dx = Dx / nSubSeg;
@@ -244,7 +250,7 @@ void calcSums(double (*f)(double x), double from, double to, double * s_out, dou
 	*S_out = S;
 }
 
-int cpus[4] = {0, 1, 2, 3};
+int cpus[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
 
 
 
@@ -253,7 +259,7 @@ void threadFunc(Task * task, int thr, int nThr)
 	double s = 0;
 	double S = 0;
 
-	int cpu = cpus[thr % 4];
+	int cpu = cpus[thr % 12];
 
 	cpu_set_t set;
 	CPU_ZERO(&set);
@@ -265,17 +271,46 @@ void threadFunc(Task * task, int thr, int nThr)
 
 	int i = 0;
 
-	while (task->take(&seg))
+	struct timeval tv;
+	
+	bool canTake;
+
+	long wasted = 0;
+	long wastedHere;
+
+	while (true)
 	{
+		wastedHere = 0;
+		gettimeofday(&tv, NULL);
+		wastedHere -= (tv.tv_usec + 1000000 * tv.tv_sec);
+		
+		canTake = task->take(&seg);
+		
+		gettimeofday(&tv, NULL);
+		wastedHere += (tv.tv_usec + 1000000 * tv.tv_sec);
+		if (!canTake)
+			break;
+
 		calcSums(task->f, seg.from, seg.to, &s, &S);
+		
+		gettimeofday(&tv, NULL);
+		wastedHere -= (tv.tv_usec + 1000000 * tv.tv_sec);
+		
 		task->commit(seg, s, S);
+		
+		gettimeofday(&tv, NULL);
+		wastedHere += (tv.tv_usec + 1000000 * tv.tv_sec);
+		
 		i++;
 		if (i % 1 == 0)
 			task->printProgress();
+
+		wasted += wastedHere;
+		//usleep(wastedHere);
 	}
 	task->waiting.unlock();
 
-	printf("thread %d: %d iterations\n", thr, i);
+	printf("thread %d: %d iterations; wasted %d msec\n", thr, i, (int)(wasted / 1000));
 }
 
 double integrate(Task * task, int nThreads)
@@ -283,7 +318,9 @@ double integrate(Task * task, int nThreads)
 	std::thread ** threads = new std::thread*[nThreads];
 
 	for (int i = 0; i < nThreads; i++)
+	{
 		threads[i] = new std::thread(threadFunc, task, i, nThreads);
+	}
 
 	for (int i = 0; i < nThreads; i++)
 	{
@@ -317,7 +354,7 @@ int main(int argc, char* argv[])
 	double I;
 	
 	double from = 0;
-	double to = 3 * 3.141592653;
+	double to = 13 * 3.141592653;
 
 	Task * task = new Task(func, from, to, eps);
 
