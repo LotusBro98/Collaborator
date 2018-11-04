@@ -364,7 +364,7 @@ private:
 	int head;
 	int tail;
 	int taken;
-	static const int size = 0x1000;
+	static const int size = 0x10000;
 	std::mutex lock;
 	std::mutex waiting;
 
@@ -430,8 +430,8 @@ int main(int argc, char* argv[])
 	double eps = 1e-13;
 	double I;
 	
-	double from = 0 * M_PI;
-	double to = 7 * M_PI;
+	double from = 0.5 * M_PI;
+	double to = 9 * M_PI;
 
 	if (argc > 2)
 	{
